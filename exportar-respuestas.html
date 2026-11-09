@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Exportar respuestas — Validación concepto calidad · SIAC</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Sans+3:wght@0,400;0,600&display=swap">
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.2/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.4/jspdf.plugin.autotable.min.js"></script>
+<style>
+:root{--azul:#2A2A68;--verde:#33C2A4;--verde-h:#1E8C75;--papel:#F9F9FB;--superficie:#fff;--tinta:#444652;--tinta-suave:#6E6F79;--linea:#E2E3E9;--display:"Archivo",sans-serif;--texto:"Source Sans 3",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--papel);color:var(--tinta);font-family:var(--texto);font-size:17px;line-height:1.55}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px}
+h1{font-family:var(--display);color:var(--azul);font-size:1.6rem;margin:0 0 8px}
+.lede{color:var(--tinta-suave);margin:0 0 24px;max-width:58ch}
+.panel{background:var(--superficie);border:1px solid var(--linea);border-radius:4px;padding:20px;margin-bottom:20px}
+label.campo{display:flex;flex-direction:column;gap:6px;font-family:var(--display);font-size:.74rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--tinta-suave);max-width:320px}
+input[type=password],input[type=text]{font-family:var(--texto);padding:10px 12px;border:1px solid var(--linea);border-radius:3px;width:100%}
+.acciones{display:flex;flex-wrap:wrap;gap:12px;margin-top:18px;align-items:center}
+button,a.btn{font-family:var(--display);font-weight:600;font-size:.92rem;border-radius:999px;padding:10px 22px;cursor:pointer;border:1.5px solid var(--linea);background:#fff;color:var(--azul);text-decoration:none;display:inline-block}
+button.primario{background:var(--azul);color:#fff;border-color:var(--azul)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.meta{font-family:var(--display);color:var(--verde-h);font-size:.9rem;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:.88rem;background:#fff}
+th,td{border:1px solid var(--linea);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--papel);font-family:var(--display);color:var(--azul);font-size:.78rem}
+.table-wrap{overflow:auto;max-height:420px;border:1px solid var(--linea);border-radius:4px}
+.aviso{font-size:.92rem;color:var(--tinta-suave);margin-top:12px}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:var(--azul);color:#fff;padding:10px 20px;border-radius:999px;font-family:var(--display);z-index:9}
+@media print{
+  .no-print{display:none!important}
+  body{background:#fff}
+  .table-wrap{max-height:none;overflow:visible}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Exportar respuestas de validación</h1>
+  <p class="lede">Carga las respuestas guardadas en Firebase (vía API en Vercel) y descárgalas en Excel (.xlsx) o PDF. Use la misma clave que configuró en <code>EXPORT_SECRET</code>, si aplica.</p>
+
+  <div class="panel no-print">
+    <label class="campo" for="clave">Clave de acceso (opcional)
+      <input type="password" id="clave" autocomplete="off" placeholder="Solo si definió EXPORT_SECRET">
+    </label>
+    <div class="acciones">
+      <button type="button" class="primario" id="cargar">Cargar respuestas</button>
+      <button type="button" id="excel" disabled>Descargar Excel</button>
+      <button type="button" id="pdf" disabled>Descargar PDF</button>
+      <button type="button" id="imprimir" disabled>Imprimir / PDF del navegador</button>
+      <a class="btn" href="validacion-concepto-calidad.html">Volver al formulario</a>
+    </div>
+    <p class="aviso" id="estado"></p>
+  </div>
+
+  <p class="meta" id="conteo">Sin datos cargados</p>
+  <div class="table-wrap" id="contenedor" hidden>
+    <table id="tabla">
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>Nombre</th>
+          <th>Dependencia</th>
+          <th>Estamento</th>
+          <th>P1</th>
+          <th>Obs. P1</th>
+          <th>P2</th>
+          <th>Obs. P2</th>
+          <th>P3</th>
+          <th>Obs. P3</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var API = "/api/respuestas";
+  var CLAVE_LS = "siac_export_secret";
+  var rows = [];
+  var $ = function(id){ return document.getElementById(id); };
+
+  function toast(msg){
+    var t = document.createElement("div");
+    t.className = "toast";
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function(){ t.remove(); }, 3000);
+  }
+
+  function fmtFecha(iso){
+    if (!iso) return "";
+    try { return new Date(iso).toLocaleString("es-CO"); } catch (e) { return iso; }
+  }
+
+  function urlApi(){
+    var clave = $("clave").value.trim() || sessionStorage.getItem(CLAVE_LS) || "";
+    if (clave) sessionStorage.setItem(CLAVE_LS, clave);
+    return API + (clave ? ("?key=" + encodeURIComponent(clave)) : "");
+  }
+
+  function pintarTabla(){
+    var tb = $("tabla").querySelector("tbody");
+    tb.innerHTML = rows.map(function(r){
+      return "<tr><td>" + esc(fmtFecha(r.ts)) + "</td><td>" + esc(r.nombre) + "</td><td>" + esc(r.dependencia) +
+        "</td><td>" + esc(r.rol) + "</td><td>" + esc(r.p1) + "</td><td>" + esc(r.o1) +
+        "</td><td>" + esc(r.p2) + "</td><td>" + esc(r.o2) + "</td><td>" + esc(r.p3) + "</td><td>" + esc(r.o3) + "</td></tr>";
+    }).join("");
+    $("conteo").textContent = rows.length + (rows.length === 1 ? " respuesta" : " respuestas");
+    $("contenedor").hidden = rows.length === 0;
+    $("excel").disabled = !rows.length;
+    $("pdf").disabled = !rows.length;
+    $("imprimir").disabled = !rows.length;
+  }
+
+  function esc(s){
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function(c){
+      return ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"})[c];
+    });
+  }
+
+  function aHoja(){
+    var header = ["Fecha","Nombre","Dependencia","Estamento","P1 Pertinencia","Obs P1","P2 Integralidad","Obs P2","P3 Capacidad orientadora","Obs P3"];
+    var data = [header];
+    rows.forEach(function(r){
+      data.push([fmtFecha(r.ts), r.nombre, r.dependencia, r.rol, r.p1, r.o1, r.p2, r.o2, r.p3, r.o3]);
+    });
+    return data;
+  }
+
+  $("cargar").addEventListener("click", function(){
+    $("estado").textContent = "Cargando…";
+    $("cargar").disabled = true;
+    fetch(urlApi()).then(function(res){
+      if (res.status === 401) throw new Error("auth");
+      if (!res.ok) throw new Error("http");
+      return res.json();
+    }).then(function(data){
+      rows = (data && data.respuestas) || [];
+      pintarTabla();
+      $("estado").textContent = rows.length ? "Datos listos para exportar." : "No hay respuestas en Firebase aún.";
+      toast("Carga completada");
+    }).catch(function(err){
+      rows = [];
+      pintarTabla();
+      if (err && err.message === "auth"){
+        sessionStorage.removeItem(CLAVE_LS);
+        $("estado").textContent = "Clave incorrecta. Revise EXPORT_SECRET en Vercel.";
+      } else {
+        $("estado").textContent = "Error al cargar. Confirme que el proyecto está desplegado en Vercel y FIREBASE_SERVICE_ACCOUNT está configurada.";
+      }
+    }).finally(function(){ $("cargar").disabled = false; });
+  });
+
+  $("excel").addEventListener("click", function(){
+    if (!rows.length) return;
+    var wb = XLSX.utils.book_new();
+    var ws = XLSX.utils.aoa_to_sheet(aHoja());
+    ws["!cols"] = [{wch:18},{wch:24},{wch:22},{wch:16},{wch:6},{wch:30},{wch:6},{wch:30},{wch:6},{wch:30}];
+    XLSX.utils.book_append_sheet(wb, ws, "Respuestas");
+    var nombre = "validacion_calidad_SIAC_" + new Date().toISOString().slice(0, 10) + ".xlsx";
+    XLSX.writeFile(wb, nombre);
+    toast("Excel descargado");
+  });
+
+  $("pdf").addEventListener("click", function(){
+    if (!rows.length) return;
+    var jsPDF = window.jspdf.jsPDF;
+    var doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    doc.setFontSize(14);
+    doc.text("Validación del concepto de calidad — SIAC UNAL", 40, 36);
+    doc.setFontSize(10);
+    doc.text("Exportación: " + new Date().toLocaleString("es-CO") + " · Total: " + rows.length, 40, 54);
+    doc.autoTable({
+      startY: 64,
+      head: [["Fecha","Nombre","Dependencia","Estamento","P1","Obs1","P2","Obs2","P3","Obs3"]],
+      body: rows.map(function(r){
+        return [fmtFecha(r.ts), r.nombre, r.dependencia, r.rol, r.p1, r.o1, r.p2, r.o2, r.p3, r.o3];
+      }),
+      styles: { fontSize: 7, cellPadding: 3 },
+      headStyles: { fillColor: [42, 42, 104] },
+      columnStyles: {
+        5: { cellWidth: 90 },
+        7: { cellWidth: 90 },
+        9: { cellWidth: 90 }
+      }
+    });
+    doc.save("validacion_calidad_SIAC_" + new Date().toISOString().slice(0, 10) + ".pdf");
+    toast("PDF descargado");
+  });
+
+  $("imprimir").addEventListener("click", function(){ window.print(); });
+
+  var saved = sessionStorage.getItem(CLAVE_LS);
+  if (saved) $("clave").value = saved;
+})();
+</script>
+</body>
+</html>
